@@ -40,6 +40,10 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
     """)
+    try:
+        conn.execute("ALTER TABLE maintenance ADD COLUMN no_reschedule INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -235,7 +239,10 @@ def index():
             "end_time": fmt(datetime.fromisoformat(t["end_time"])),
             "main_services": [s["service_id"] for s in main_svcs],
             "backup_services": [s["service_id"] for s in backup_svcs],
+            "no_reschedule": t["no_reschedule"],
         })
+
+    no_reschedule_tickets = set(t["ticket_number"] for t in ticket_details if t["no_reschedule"])
 
     disruptions = calculate_disruptions()
     ticket_pairs = calculate_ticket_pair_overlaps()
@@ -262,7 +269,7 @@ def index():
         p["notes"] = [{"message": r["message"], "time": r["created_at"] + " UTC"} for r in notes_rows]
 
     conn.close()
-    return render_template("index.html", tickets=ticket_details, disruptions=disruptions, ticket_pairs=ticket_pairs)
+    return render_template("index.html", tickets=ticket_details, disruptions=disruptions, ticket_pairs=ticket_pairs, no_reschedule_tickets=no_reschedule_tickets)
 
 
 @app.route("/add", methods=["POST"])
@@ -409,6 +416,18 @@ def update_maintenance(maintenance_id):
 
     ticket_number = request.form.get("ticket_number", "")
     flash(f"Ticket {ticket_number} updated.", "success")
+    return redirect(url_for("index"))
+
+
+@app.route("/toggle_no_reschedule/<int:maintenance_id>", methods=["POST"])
+def toggle_no_reschedule(maintenance_id):
+    conn = get_db()
+    current = conn.execute("SELECT no_reschedule FROM maintenance WHERE id = ?", (maintenance_id,)).fetchone()
+    if current:
+        new_val = 0 if current["no_reschedule"] else 1
+        conn.execute("UPDATE maintenance SET no_reschedule = ? WHERE id = ?", (new_val, maintenance_id))
+        conn.commit()
+    conn.close()
     return redirect(url_for("index"))
 
 
