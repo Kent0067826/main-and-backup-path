@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Edit {{ ticket.ticket_number }}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; color: #1a1a2e; padding: 24px; }
+  h1 { font-size: 1.6rem; margin-bottom: 24px; }
+  .container { max-width: 800px; margin: 0 auto; }
+  .card { background: #fff; border-radius: 10px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .flash { padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 0.9rem; }
+  .flash.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .form-group { display: flex; flex-direction: column; }
+  .form-group.full { grid-column: 1 / -1; }
+  .form-group label { font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; color: #555; }
+  .form-group input, .form-group textarea { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.95rem; font-family: inherit; }
+  .form-group input:focus, .form-group textarea:focus { outline: none; border-color: #3182ce; box-shadow: 0 0 0 2px rgba(49,130,206,0.2); }
+  .form-group input[readonly] { background: #f7fafc; color: #888; }
+  .form-group textarea { resize: vertical; }
+  .form-group .hint { font-size: 0.75rem; color: #888; margin-top: 2px; }
+
+  .btn-row { margin-top: 16px; display: flex; gap: 10px; }
+  .btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; text-decoration: none; display: inline-block; text-align: center; }
+  .btn-primary { background: #3182ce; color: #fff; }
+  .btn-primary:hover { background: #2c5282; }
+  .btn-secondary { background: #e2e8f0; color: #4a5568; }
+  .btn-secondary:hover { background: #cbd5e0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Modify: {{ ticket.ticket_number }}</h1>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+  <div class="flash {{ category }}">{{ message }}</div>
+  {% endfor %}
+  {% endwith %}
+
+  <div class="card">
+    <form action="/update/{{ ticket.id }}" method="post">
+      <input type="hidden" name="ticket_number" value="{{ ticket.ticket_number }}">
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Ticket Number</label>
+          <input type="text" value="{{ ticket.ticket_number }}" readonly>
+        </div>
+        <div class="form-group">
+          <label>Start Time</label>
+          <input type="text" name="start_time" value="{{ ticket.start_time }}" required>
+          <span class="hint">Format: DD.MM.YYYY HH:MM UTC</span>
+        </div>
+        <div class="form-group">
+          <label>End Time</label>
+          <input type="text" name="end_time" value="{{ ticket.end_time }}" required>
+          <span class="hint">Format: DD.MM.YYYY HH:MM UTC</span>
+        </div>
+        <div class="form-group">
+          <label>Affected Main Path</label>
+          <textarea name="main_services" rows="6">{{ ticket.main_services }}</textarea>
+          <span class="hint">Auto-extracts WL-prefixed Service IDs</span>
+        </div>
+        <div class="form-group">
+          <label>Affected Backup Path</label>
+          <textarea name="backup_services" rows="6">{{ ticket.backup_services }}</textarea>
+          <span class="hint">Auto-extracts WL-prefixed Service IDs</span>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <a href="/" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+</body>
+</html>

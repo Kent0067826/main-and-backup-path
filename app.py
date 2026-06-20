@@ -40,6 +40,10 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
     """)
+    try:
+        conn.execute("ALTER TABLE maintenance ADD COLUMN no_reschedule INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -72,22 +76,8 @@ def union_intervals(intervals):
     return merged
 
 
-def intersect_interval_lists(list_a, list_b):
-    result = []
-    i, j = 0, 0
-    while i < len(list_a) and j < len(list_b):
-        start = max(list_a[i][0], list_b[j][0])
-        end = min(list_a[i][1], list_b[j][1])
-        if start < end:
-            result.append((start, end))
-        if list_a[i][1] < list_b[j][1]:
-            i += 1
-        else:
-            j += 1
-    return result
-
-
 def calculate_disruptions():
+    """Per-service disruptions, only counting CROSS-TICKET overlaps."""
     conn = get_db()
     services = conn.execute("SELECT DISTINCT service_id FROM affected_paths").fetchall()
     disruptions = []
@@ -121,11 +111,22 @@ def calculate_disruptions():
             for r in backup_rows
         ]
 
-        main_intervals = union_intervals([(s, e) for s, e, _ in main_windows])
-        backup_intervals = union_intervals([(s, e) for s, e, _ in backup_windows])
-        disruption_intervals = intersect_interval_lists(main_intervals, backup_intervals)
+        # Only count overlaps between DIFFERENT tickets
+        cross_overlaps = []
+        for ms, me, mt in main_windows:
+            for bs, be, bt in backup_windows:
+                if mt != bt:
+                    os_ = max(ms, bs)
+                    oe_ = min(me, be)
+                    if os_ < oe_:
+                        cross_overlaps.append((os_, oe_))
 
-        for d_start, d_end in disruption_intervals:
+        if not cross_overlaps:
+            continue
+
+        merged = union_intervals(cross_overlaps)
+
+        for d_start, d_end in merged:
             main_tickets = sorted(set(t for s, e, t in main_windows if s < d_end and e > d_start))
             backup_tickets = sorted(set(t for s, e, t in backup_windows if s < d_end and e > d_start))
             disruptions.append({
@@ -139,6 +140,81 @@ def calculate_disruptions():
     conn.close()
     disruptions.sort(key=lambda d: (d["service_id"], d["start"]))
     return disruptions
+
+
+def calculate_ticket_pair_overlaps():
+    """Group disrupted services by overlapping ticket pairs."""
+    conn = get_db()
+    all_tickets = conn.execute("SELECT * FROM maintenance ORDER BY start_time").fetchall()
+
+    pairs = []
+    for i in range(len(all_tickets)):
+        for j in range(i + 1, len(all_tickets)):
+            t1 = all_tickets[i]
+            t2 = all_tickets[j]
+            s1 = datetime.fromisoformat(t1["start_time"])
+            e1 = datetime.fromisoformat(t1["end_time"])
+            s2 = datetime.fromisoformat(t2["start_time"])
+            e2 = datetime.fromisoformat(t2["end_time"])
+
+            os_ = max(s1, s2)
+            oe_ = min(e1, e2)
+            if os_ >= oe_:
+                continue
+
+            t1_main = set(r["service_id"] for r in conn.execute(
+                "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'main'",
+                (t1["id"],)).fetchall())
+            t1_backup = set(r["service_id"] for r in conn.execute(
+                "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'backup'",
+                (t1["id"],)).fetchall())
+            t2_main = set(r["service_id"] for r in conn.execute(
+                "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'main'",
+                (t2["id"],)).fetchall())
+            t2_backup = set(r["service_id"] for r in conn.execute(
+                "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'backup'",
+                (t2["id"],)).fetchall())
+
+            # A->main + B->backup
+            ab = t1_main & t2_backup
+            # A->backup + B->main
+            ba = t1_backup & t2_main
+
+            all_services = ab | ba
+            if not all_services:
+                continue
+
+            service_details = []
+            for sid in sorted(all_services):
+                main_by = []
+                backup_by = []
+                if sid in t1_main:
+                    main_by.append(t1["ticket_number"])
+                if sid in t2_main:
+                    main_by.append(t2["ticket_number"])
+                if sid in t1_backup:
+                    backup_by.append(t1["ticket_number"])
+                if sid in t2_backup:
+                    backup_by.append(t2["ticket_number"])
+                service_details.append({
+                    "service_id": sid,
+                    "main_tickets": main_by,
+                    "backup_tickets": backup_by,
+                })
+
+            pair_key = f"PAIR:{t1['ticket_number']}+{t2['ticket_number']}"
+            pairs.append({
+                "ticket_a": t1["ticket_number"],
+                "ticket_b": t2["ticket_number"],
+                "pair_key": pair_key,
+                "overlap_start": fmt(os_),
+                "overlap_end": fmt(oe_),
+                "services": service_details,
+                "count": len(all_services),
+            })
+
+    conn.close()
+    return pairs
 
 
 @app.route("/")
@@ -163,9 +239,13 @@ def index():
             "end_time": fmt(datetime.fromisoformat(t["end_time"])),
             "main_services": [s["service_id"] for s in main_svcs],
             "backup_services": [s["service_id"] for s in backup_svcs],
+            "no_reschedule": t["no_reschedule"],
         })
 
+    no_reschedule_tickets = set(t["ticket_number"] for t in ticket_details if t["no_reschedule"])
+
     disruptions = calculate_disruptions()
+    ticket_pairs = calculate_ticket_pair_overlaps()
 
     notes_by_service = {}
     for d in disruptions:
@@ -180,8 +260,16 @@ def index():
             ]
         d["notes"] = notes_by_service[sid]
 
+    for p in ticket_pairs:
+        pk = p["pair_key"]
+        notes_rows = conn.execute(
+            "SELECT message, created_at FROM disruption_notes WHERE service_id = ? ORDER BY created_at DESC",
+            (pk,),
+        ).fetchall()
+        p["notes"] = [{"message": r["message"], "time": r["created_at"] + " UTC"} for r in notes_rows]
+
     conn.close()
-    return render_template("index.html", tickets=ticket_details, disruptions=disruptions)
+    return render_template("index.html", tickets=ticket_details, disruptions=disruptions, ticket_pairs=ticket_pairs, no_reschedule_tickets=no_reschedule_tickets)
 
 
 @app.route("/add", methods=["POST"])
@@ -253,6 +341,93 @@ def add_note():
         )
         conn.commit()
         conn.close()
+    return redirect(url_for("index"))
+
+
+@app.route("/edit/<int:maintenance_id>")
+def edit_maintenance(maintenance_id):
+    conn = get_db()
+    t = conn.execute("SELECT * FROM maintenance WHERE id = ?", (maintenance_id,)).fetchone()
+    if not t:
+        conn.close()
+        flash("Ticket not found.", "error")
+        return redirect(url_for("index"))
+
+    main_svcs = [r["service_id"] for r in conn.execute(
+        "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'main'",
+        (maintenance_id,),
+    ).fetchall()]
+    backup_svcs = [r["service_id"] for r in conn.execute(
+        "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'backup'",
+        (maintenance_id,),
+    ).fetchall()]
+    conn.close()
+
+    ticket = {
+        "id": t["id"],
+        "ticket_number": t["ticket_number"],
+        "start_time": fmt(datetime.fromisoformat(t["start_time"])),
+        "end_time": fmt(datetime.fromisoformat(t["end_time"])),
+        "main_services": "\n".join(main_svcs),
+        "backup_services": "\n".join(backup_svcs),
+    }
+    return render_template("edit.html", ticket=ticket)
+
+
+@app.route("/update/<int:maintenance_id>", methods=["POST"])
+def update_maintenance(maintenance_id):
+    start_str = request.form.get("start_time", "").strip()
+    end_str = request.form.get("end_time", "").strip()
+    main_str = request.form.get("main_services", "").strip()
+    backup_str = request.form.get("backup_services", "").strip()
+
+    try:
+        start_time = parse_time(start_str)
+        end_time = parse_time(end_str)
+    except ValueError:
+        flash("Invalid time format. Use: DD.MM.YYYY HH:MM UTC", "error")
+        return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
+
+    if end_time <= start_time:
+        flash("End time must be after start time.", "error")
+        return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
+
+    main_services = extract_service_ids(main_str)
+    backup_services = extract_service_ids(backup_str)
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE maintenance SET start_time = ?, end_time = ? WHERE id = ?",
+        (start_time.isoformat(), end_time.isoformat(), maintenance_id),
+    )
+    conn.execute("DELETE FROM affected_paths WHERE maintenance_id = ?", (maintenance_id,))
+    for sid in main_services:
+        conn.execute(
+            "INSERT INTO affected_paths (maintenance_id, service_id, path_type) VALUES (?, ?, 'main')",
+            (maintenance_id, sid),
+        )
+    for sid in backup_services:
+        conn.execute(
+            "INSERT INTO affected_paths (maintenance_id, service_id, path_type) VALUES (?, ?, 'backup')",
+            (maintenance_id, sid),
+        )
+    conn.commit()
+    conn.close()
+
+    ticket_number = request.form.get("ticket_number", "")
+    flash(f"Ticket {ticket_number} updated.", "success")
+    return redirect(url_for("index"))
+
+
+@app.route("/toggle_no_reschedule/<int:maintenance_id>", methods=["POST"])
+def toggle_no_reschedule(maintenance_id):
+    conn = get_db()
+    current = conn.execute("SELECT no_reschedule FROM maintenance WHERE id = ?", (maintenance_id,)).fetchone()
+    if current:
+        new_val = 0 if current["no_reschedule"] else 1
+        conn.execute("UPDATE maintenance SET no_reschedule = ? WHERE id = ?", (new_val, maintenance_id))
+        conn.commit()
+    conn.close()
     return redirect(url_for("index"))
 
 
