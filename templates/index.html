@@ -161,11 +161,10 @@
     <details class="pair-item">
       <summary>
         <span class="summary-tickets">{{ p.ticket_a }} + {{ p.ticket_b }}</span>
-        {% if p.ticket_a in no_reschedule_tickets and p.ticket_b in no_reschedule_tickets %}
-        <span class="no-resched-badge">Both cannot reschedule</span>
-        {% elif p.ticket_a in no_reschedule_tickets %}
+        {% if p.ticket_a in no_reschedule_tickets %}
         <span class="no-resched-badge">{{ p.ticket_a }} cannot reschedule</span>
-        {% elif p.ticket_b in no_reschedule_tickets %}
+        {% endif %}
+        {% if p.ticket_b in no_reschedule_tickets %}
         <span class="no-resched-badge">{{ p.ticket_b }} cannot reschedule</span>
         {% endif %}
         <span class="summary-count">{{ p.count }} service{{ 's' if p.count != 1 }}</span>
@@ -186,8 +185,8 @@
                 {% for s in p.services %}
                 <tr>
                   <td><strong>{{ s.service_id }}</strong></td>
-                  <td>{% for t in s.main_tickets %}<span class="ticket-tag main">{{ t }}</span>{% if t in no_reschedule_tickets %}<span class="no-resched-inline">locked</span>{% endif %}{% endfor %}</td>
-                  <td>{% for t in s.backup_tickets %}<span class="ticket-tag backup">{{ t }}</span>{% if t in no_reschedule_tickets %}<span class="no-resched-inline">locked</span>{% endif %}{% endfor %}</td>
+                  <td>{% for t in s.main_tickets %}<span class="ticket-tag main">{{ t }}</span>{% endfor %}</td>
+                  <td>{% for t in s.backup_tickets %}<span class="ticket-tag backup">{{ t }}</span>{% endfor %}</td>
                 </tr>
                 {% endfor %}
               </tbody>
