@@ -54,7 +54,10 @@
   .pair-item summary:hover { background: #fffff0; }
   .pair-item .summary-tickets { font-weight: 700; color: #975a16; }
   .pair-item .summary-count { margin-left: auto; background: #e53e3e; color: #fff; padding: 2px 10px; border-radius: 10px; font-size: 0.8rem; font-weight: 700; }
-  .pair-detail { background: #fff; border: 1px solid #ecc94b; border-top: none; border-radius: 0 0 6px 6px; padding: 14px; }
+  .pair-detail { background: #fff; border: 1px solid #ecc94b; border-top: none; border-radius: 0 0 6px 6px; }
+  .pair-detail-content { display: flex; }
+  .pair-detail-left { flex: 1; padding: 14px; }
+  .pair-detail-right { width: 360px; padding: 14px; background: #fafafa; border-left: 1px solid #ecc94b; }
   .pair-time { font-size: 0.85rem; color: #666; margin-bottom: 10px; }
   .pair-services { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   .pair-services th { text-align: left; padding: 6px 10px; background: #fffff0; border-bottom: 1px solid #ecc94b; font-weight: 600; color: #975a16; }
@@ -153,25 +156,49 @@
         <span class="summary-count">{{ p.count }} service{{ 's' if p.count != 1 }}</span>
       </summary>
       <div class="pair-detail">
-        <div class="pair-time">Overlap: {{ p.overlap_start }} &mdash; {{ p.overlap_end }}</div>
-        <table class="pair-services">
-          <thead>
-            <tr>
-              <th>Service ID</th>
-              <th>Main Path</th>
-              <th>Backup Path</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for s in p.services %}
-            <tr>
-              <td><strong>{{ s.service_id }}</strong></td>
-              <td>{% for t in s.main_tickets %}<span class="ticket-tag main">{{ t }}</span>{% endfor %}</td>
-              <td>{% for t in s.backup_tickets %}<span class="ticket-tag backup">{{ t }}</span>{% endfor %}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+        <div class="pair-detail-content">
+          <div class="pair-detail-left">
+            <div class="pair-time">Overlap: {{ p.overlap_start }} &mdash; {{ p.overlap_end }}</div>
+            <table class="pair-services">
+              <thead>
+                <tr>
+                  <th>Service ID</th>
+                  <th>Main Path</th>
+                  <th>Backup Path</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for s in p.services %}
+                <tr>
+                  <td><strong>{{ s.service_id }}</strong></td>
+                  <td>{% for t in s.main_tickets %}<span class="ticket-tag main">{{ t }}</span>{% endfor %}</td>
+                  <td>{% for t in s.backup_tickets %}<span class="ticket-tag backup">{{ t }}</span>{% endfor %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="pair-detail-right">
+            <div class="notes-header">Updates</div>
+            <div class="notes-list">
+              {% if p.notes %}
+              {% for n in p.notes %}
+              <div class="note-entry">
+                <div class="note-time">{{ n.time }}</div>
+                <div class="note-msg">{{ n.message }}</div>
+              </div>
+              {% endfor %}
+              {% else %}
+              <div class="no-notes">No updates yet.</div>
+              {% endif %}
+            </div>
+            <form class="note-form" action="/add_note" method="post">
+              <input type="hidden" name="service_id" value="{{ p.pair_key }}">
+              <input type="text" name="message" placeholder="Add a note..." required>
+              <button type="submit">Update</button>
+            </form>
+          </div>
+        </div>
       </div>
     </details>
     {% endfor %}

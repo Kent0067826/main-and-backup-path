@@ -198,9 +198,11 @@ def calculate_ticket_pair_overlaps():
                     "backup_tickets": backup_by,
                 })
 
+            pair_key = f"PAIR:{t1['ticket_number']}+{t2['ticket_number']}"
             pairs.append({
                 "ticket_a": t1["ticket_number"],
                 "ticket_b": t2["ticket_number"],
+                "pair_key": pair_key,
                 "overlap_start": fmt(os_),
                 "overlap_end": fmt(oe_),
                 "services": service_details,
@@ -250,6 +252,14 @@ def index():
                 {"message": r["message"], "time": r["created_at"] + " UTC"} for r in notes_rows
             ]
         d["notes"] = notes_by_service[sid]
+
+    for p in ticket_pairs:
+        pk = p["pair_key"]
+        notes_rows = conn.execute(
+            "SELECT message, created_at FROM disruption_notes WHERE service_id = ? ORDER BY created_at DESC",
+            (pk,),
+        ).fetchall()
+        p["notes"] = [{"message": r["message"], "time": r["created_at"] + " UTC"} for r in notes_rows]
 
     conn.close()
     return render_template("index.html", tickets=ticket_details, disruptions=disruptions, ticket_pairs=ticket_pairs)
