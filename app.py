@@ -337,6 +337,81 @@ def add_note():
     return redirect(url_for("index"))
 
 
+@app.route("/edit/<int:maintenance_id>")
+def edit_maintenance(maintenance_id):
+    conn = get_db()
+    t = conn.execute("SELECT * FROM maintenance WHERE id = ?", (maintenance_id,)).fetchone()
+    if not t:
+        conn.close()
+        flash("Ticket not found.", "error")
+        return redirect(url_for("index"))
+
+    main_svcs = [r["service_id"] for r in conn.execute(
+        "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'main'",
+        (maintenance_id,),
+    ).fetchall()]
+    backup_svcs = [r["service_id"] for r in conn.execute(
+        "SELECT service_id FROM affected_paths WHERE maintenance_id = ? AND path_type = 'backup'",
+        (maintenance_id,),
+    ).fetchall()]
+    conn.close()
+
+    ticket = {
+        "id": t["id"],
+        "ticket_number": t["ticket_number"],
+        "start_time": fmt(datetime.fromisoformat(t["start_time"])),
+        "end_time": fmt(datetime.fromisoformat(t["end_time"])),
+        "main_services": "\n".join(main_svcs),
+        "backup_services": "\n".join(backup_svcs),
+    }
+    return render_template("edit.html", ticket=ticket)
+
+
+@app.route("/update/<int:maintenance_id>", methods=["POST"])
+def update_maintenance(maintenance_id):
+    start_str = request.form.get("start_time", "").strip()
+    end_str = request.form.get("end_time", "").strip()
+    main_str = request.form.get("main_services", "").strip()
+    backup_str = request.form.get("backup_services", "").strip()
+
+    try:
+        start_time = parse_time(start_str)
+        end_time = parse_time(end_str)
+    except ValueError:
+        flash("Invalid time format. Use: DD.MM.YYYY HH:MM UTC", "error")
+        return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
+
+    if end_time <= start_time:
+        flash("End time must be after start time.", "error")
+        return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
+
+    main_services = extract_service_ids(main_str)
+    backup_services = extract_service_ids(backup_str)
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE maintenance SET start_time = ?, end_time = ? WHERE id = ?",
+        (start_time.isoformat(), end_time.isoformat(), maintenance_id),
+    )
+    conn.execute("DELETE FROM affected_paths WHERE maintenance_id = ?", (maintenance_id,))
+    for sid in main_services:
+        conn.execute(
+            "INSERT INTO affected_paths (maintenance_id, service_id, path_type) VALUES (?, ?, 'main')",
+            (maintenance_id, sid),
+        )
+    for sid in backup_services:
+        conn.execute(
+            "INSERT INTO affected_paths (maintenance_id, service_id, path_type) VALUES (?, ?, 'backup')",
+            (maintenance_id, sid),
+        )
+    conn.commit()
+    conn.close()
+
+    ticket_number = request.form.get("ticket_number", "")
+    flash(f"Ticket {ticket_number} updated.", "success")
+    return redirect(url_for("index"))
+
+
 @app.route("/delete/<int:maintenance_id>", methods=["POST"])
 def delete_maintenance(maintenance_id):
     conn = get_db()

@@ -88,6 +88,8 @@
   .btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
   .btn-primary { background: #3182ce; color: #fff; margin-top: 8px; }
   .btn-primary:hover { background: #2c5282; }
+  .btn-edit { background: #4a5568; color: #fff; font-size: 0.8rem; padding: 4px 12px; text-decoration: none; margin-right: 6px; }
+  .btn-edit:hover { background: #2d3748; }
   .btn-danger { background: #e53e3e; color: #fff; font-size: 0.8rem; padding: 4px 12px; }
   .btn-danger:hover { background: #c53030; }
 
@@ -276,7 +278,8 @@
           <td>{{ t.start_time }}<br>{{ t.end_time }}</td>
           <td>{% for s in t.main_services %}<span class="ticket-tag main">{{ s }}</span>{% endfor %}</td>
           <td>{% for s in t.backup_services %}<span class="ticket-tag backup">{{ s }}</span>{% endfor %}</td>
-          <td>
+          <td style="white-space: nowrap;">
+            <a href="/edit/{{ t.id }}" class="btn btn-edit">Reschedule</a>
             <form action="/delete/{{ t.id }}" method="post" style="display:inline;" onsubmit="return confirm('Delete this ticket?');">
               <button type="submit" class="btn btn-danger">Delete</button>
             </form>
