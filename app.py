@@ -8,6 +8,7 @@ app = Flask(__name__)
 app.secret_key = "maint-tracker-key"
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "maintenance.db")
 TIME_FMT = "%d.%m.%Y %H:%M"
+FAR_FUTURE = datetime(2099, 12, 31, 23, 59)
 
 
 def get_db():
@@ -24,7 +25,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ticket_number TEXT NOT NULL UNIQUE,
             start_time TEXT NOT NULL,
-            end_time TEXT NOT NULL
+            end_time TEXT
         );
         CREATE TABLE IF NOT EXISTS affected_paths (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +45,23 @@ def init_db():
         conn.execute("ALTER TABLE maintenance ADD COLUMN no_reschedule INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    # Migrate: remove NOT NULL constraint from end_time for existing DBs
+    col_info = conn.execute("PRAGMA table_info(maintenance)").fetchall()
+    for col in col_info:
+        if col["name"] == "end_time" and col["notnull"]:
+            conn.executescript("""
+                CREATE TABLE maintenance_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_number TEXT NOT NULL UNIQUE,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT,
+                    no_reschedule INTEGER DEFAULT 0
+                );
+                INSERT INTO maintenance_new SELECT id, ticket_number, start_time, end_time, no_reschedule FROM maintenance;
+                DROP TABLE maintenance;
+                ALTER TABLE maintenance_new RENAME TO maintenance;
+            """)
+            break
     conn.commit()
     conn.close()
 
@@ -56,7 +74,15 @@ def parse_time(s):
 
 
 def fmt(dt):
+    if dt is None or dt >= FAR_FUTURE:
+        return "TBD"
     return dt.strftime(TIME_FMT) + " UTC"
+
+
+def parse_end_time_db(val):
+    if not val:
+        return FAR_FUTURE
+    return datetime.fromisoformat(val)
 
 
 def extract_service_ids(text):
@@ -103,11 +129,11 @@ def calculate_disruptions():
             continue
 
         main_windows = [
-            (datetime.fromisoformat(r["start_time"]), datetime.fromisoformat(r["end_time"]), r["ticket_number"])
+            (datetime.fromisoformat(r["start_time"]), parse_end_time_db(r["end_time"]), r["ticket_number"])
             for r in main_rows
         ]
         backup_windows = [
-            (datetime.fromisoformat(r["start_time"]), datetime.fromisoformat(r["end_time"]), r["ticket_number"])
+            (datetime.fromisoformat(r["start_time"]), parse_end_time_db(r["end_time"]), r["ticket_number"])
             for r in backup_rows
         ]
 
@@ -153,9 +179,9 @@ def calculate_ticket_pair_overlaps():
             t1 = all_tickets[i]
             t2 = all_tickets[j]
             s1 = datetime.fromisoformat(t1["start_time"])
-            e1 = datetime.fromisoformat(t1["end_time"])
+            e1 = parse_end_time_db(t1["end_time"])
             s2 = datetime.fromisoformat(t2["start_time"])
-            e2 = datetime.fromisoformat(t2["end_time"])
+            e2 = parse_end_time_db(t2["end_time"])
 
             os_ = max(s1, s2)
             oe_ = min(e1, e2)
@@ -236,7 +262,7 @@ def index():
             "id": t["id"],
             "ticket_number": t["ticket_number"],
             "start_time": fmt(datetime.fromisoformat(t["start_time"])),
-            "end_time": fmt(datetime.fromisoformat(t["end_time"])),
+            "end_time": fmt(parse_end_time_db(t["end_time"])),
             "main_services": [s["service_id"] for s in main_svcs],
             "backup_services": [s["service_id"] for s in backup_svcs],
             "no_reschedule": t["no_reschedule"],
@@ -280,20 +306,26 @@ def add_maintenance():
     main_str = request.form.get("main_services", "").strip()
     backup_str = request.form.get("backup_services", "").strip()
 
-    if not ticket_number or not start_str or not end_str:
-        flash("Ticket number, start time, and end time are required.", "error")
+    if not ticket_number or not start_str:
+        flash("Ticket number and start time are required.", "error")
         return redirect(url_for("index"))
 
     try:
         start_time = parse_time(start_str)
-        end_time = parse_time(end_str)
     except ValueError:
         flash("Invalid time format. Use: DD.MM.YYYY HH:MM UTC", "error")
         return redirect(url_for("index"))
 
-    if end_time <= start_time:
-        flash("End time must be after start time.", "error")
-        return redirect(url_for("index"))
+    end_time = None
+    if end_str:
+        try:
+            end_time = parse_time(end_str)
+        except ValueError:
+            flash("Invalid end time format. Use: DD.MM.YYYY HH:MM UTC", "error")
+            return redirect(url_for("index"))
+        if end_time <= start_time:
+            flash("End time must be after start time.", "error")
+            return redirect(url_for("index"))
 
     main_services = extract_service_ids(main_str)
     backup_services = extract_service_ids(backup_str)
@@ -306,7 +338,7 @@ def add_maintenance():
     try:
         cursor = conn.execute(
             "INSERT INTO maintenance (ticket_number, start_time, end_time) VALUES (?, ?, ?)",
-            (ticket_number, start_time.isoformat(), end_time.isoformat()),
+            (ticket_number, start_time.isoformat(), end_time.isoformat() if end_time else None),
         )
         m_id = cursor.lastrowid
         for sid in main_services:
@@ -367,7 +399,7 @@ def edit_maintenance(maintenance_id):
         "id": t["id"],
         "ticket_number": t["ticket_number"],
         "start_time": fmt(datetime.fromisoformat(t["start_time"])),
-        "end_time": fmt(datetime.fromisoformat(t["end_time"])),
+        "end_time": fmt(parse_end_time_db(t["end_time"])) if t["end_time"] else "",
         "main_services": "\n".join(main_svcs),
         "backup_services": "\n".join(backup_svcs),
     }
@@ -383,14 +415,20 @@ def update_maintenance(maintenance_id):
 
     try:
         start_time = parse_time(start_str)
-        end_time = parse_time(end_str)
     except ValueError:
         flash("Invalid time format. Use: DD.MM.YYYY HH:MM UTC", "error")
         return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
 
-    if end_time <= start_time:
-        flash("End time must be after start time.", "error")
-        return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
+    end_time = None
+    if end_str:
+        try:
+            end_time = parse_time(end_str)
+        except ValueError:
+            flash("Invalid end time format. Use: DD.MM.YYYY HH:MM UTC", "error")
+            return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
+        if end_time <= start_time:
+            flash("End time must be after start time.", "error")
+            return redirect(url_for("edit_maintenance", maintenance_id=maintenance_id))
 
     main_services = extract_service_ids(main_str)
     backup_services = extract_service_ids(backup_str)
@@ -398,7 +436,7 @@ def update_maintenance(maintenance_id):
     conn = get_db()
     conn.execute(
         "UPDATE maintenance SET start_time = ?, end_time = ? WHERE id = ?",
-        (start_time.isoformat(), end_time.isoformat(), maintenance_id),
+        (start_time.isoformat(), end_time.isoformat() if end_time else None, maintenance_id),
     )
     conn.execute("DELETE FROM affected_paths WHERE maintenance_id = ?", (maintenance_id,))
     for sid in main_services:
